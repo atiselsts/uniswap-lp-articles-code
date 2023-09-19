@@ -85,8 +85,6 @@ def power_perp_v3(price, coefficients, order, include_first_order=True):
 
     perp_value = INITIAL_VALUE * (perp_return + 1.0)
     #    print("power perp value at price", order, include_first_order, price, perp_value)
-    if perp_value < 0:
-        perp_value = 0
     return perp_value
 
 #
