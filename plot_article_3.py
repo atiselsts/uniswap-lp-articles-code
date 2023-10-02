@@ -32,8 +32,9 @@ BLOCKS_PER_DAY = 86400 // 12
 
 NUM_DAYS = 365
 
-# assume 0.3% swap fee
-SWAP_FEE = 0.3 / 100
+# assume 0.3% and 0.05% swap fees
+SWAP_FEE_03 = 0.3 / 100
+SWAP_FEE_005 = 0.05 / 100
 
 NUM_SIMULATIONS = 10000
 
@@ -94,7 +95,7 @@ def test_amounts():
     reserve_x = v2_math.calculate_x(L, price)
     reserve_y = v2_math.calculate_y(L, price)
 
-    fee_tier = SWAP_FEE
+    fee_tier = SWAP_FEE_03
 
     for c in [1.0001, 1.0002, 1.01, 1.1, 1.2]:
         x, x_with_fee, y, y_with_fee, swap_fee = get_swap_amounts(L, reserve_x, reserve_y, price / c, fee_tier)
@@ -130,14 +131,19 @@ def test_amounts():
 
 ############################################################
 
-def compute_lvr(all_prices, swap_tx_cost):
+def compute_lvr(all_prices, swap_tx_cost, swap_fee):
     print(f"compute_lvr, swap_tx_cost={swap_tx_cost}")
-    fee_multiplier = 1 / (1 - SWAP_FEE)
+    fee_multiplier = 1 / (1 - swap_fee)
 
     all_lvr = []
     all_fees = []
 
-    L0 = v2_math.get_liquidity(INITIAL_X, INITIAL_Y)
+    # assume $1 million of liquidity in the pool (the larger, the better for all parties)
+    pool_x0 = 500
+    pool_y0 = 500_000
+    pool_value0 = pool_x0 * INITIAL_PRICE + pool_y0
+
+    L = v2_math.get_liquidity(pool_x0, pool_y0)
 
     if len(all_prices.shape) > 2:
         # take the first elements from the second dimension
@@ -147,17 +153,16 @@ def compute_lvr(all_prices, swap_tx_cost):
         prices = all_prices[:,sim]
         sqrt_prices = np.sqrt(prices)
 
-        reserve_x = INITIAL_X
-        reserve_y = INITIAL_Y
+        reserve_x = pool_x0
+        reserve_y = pool_y0
 
         # compute lvr and fees
         lvr = 0
         fees = 0
-        num_tx = 0
 
         for cex_price, cex_sqrt_price in zip(prices, sqrt_prices):
-            x = L0 / cex_sqrt_price - reserve_x
-            y = L0 * cex_sqrt_price - reserve_y
+            x = L / cex_sqrt_price - reserve_x
+            y = L * cex_sqrt_price - reserve_y
             if x > 0:
                 # arber sells X, LP buys X
                 x_with_fee = x * fee_multiplier
@@ -174,11 +179,10 @@ def compute_lvr(all_prices, swap_tx_cost):
                 reserve_x += x
                 reserve_y += y
                 fees += swap_fee
-                num_tx += 1
 
         # normalize by dividing with the initial value of the capital rather than the final value
-        lvr /= INITIAL_VALUE
-        fees /= INITIAL_VALUE
+        lvr /= pool_value0
+        fees /= pool_value0
         all_lvr.append(lvr)
         all_fees.append(fees)
 
@@ -190,19 +194,21 @@ def plot_lvr_and_tx_cost():
     # if swap transaction costs:
     # * $100 -> 1 bps fee per tranasaction
     # * $10 -> 0.1 bps fee per tranasaction
-    tx_cost_bps = np.array([0.0, 0.001, 0.002, 0.005, 0.01, 0.02])
+    # * $1 -> 0.01 bps fee per tranasaction
+    # * $0.1 -> 0.001 bps fee per tranasaction
+    #tx_cost_bps = np.array([0.0, 0.001, 0.002, 0.005, 0.01, 0.02])
 
-    swap_tx_cost = INITIAL_VALUE * tx_cost_bps / (100 * 100)
+    #swap_tx_cost = INITIAL_VALUE * tx_cost_bps / (100 * 100)
     # multiply by 500 because the assumption is $1M liquidity instead of $2000 as in this model
-    swap_tx_cost *= 500
+    #swap_tx_cost *= 500
 
-    print(f"tx_cost_bps={tx_cost_bps} tx_cost_$={swap_tx_cost}")
+    swap_tx_cost_dollars = np.array([0.0, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0])
 
     fig, ax = pl.subplots()
     fig.set_size_inches((4, 3))
 
     # reduce the number of simulations, since we iterate over each block
-    num_simulations = 100
+    num_simulations = 50
 
     all_prices = get_price_path(SIGMA, blocks_per_day=BLOCKS_PER_DAY, M=num_simulations)
     final_prices = all_prices[-1,:]
@@ -210,10 +216,13 @@ def plot_lvr_and_tx_cost():
     year_sigma = SIGMA * sqrt(NUM_DAYS) # convert from daily to yearly volatility
     print(f"sigma={year_sigma:.2f} mean={np.mean(final_prices):.4f} std={np.std(np.log(returns)):.4f}")
 
-    lvr_and_fees = [compute_lvr(all_prices, cost) for cost in swap_tx_cost]
+    lvr_and_fees_03 = [compute_lvr(all_prices, cost, SWAP_FEE_03) for cost in swap_tx_cost_dollars]
+    lvr_and_fees_005 = [compute_lvr(all_prices, cost, SWAP_FEE_005) for cost in swap_tx_cost_dollars]
 
-    pl.plot(swap_tx_cost, [100*u[0] for u in lvr_and_fees], label="Losses to LVR", marker="v")
-    pl.plot(swap_tx_cost, [100*u[1] for u in lvr_and_fees], label="Gains from arb fees", marker="o", color="green")
+    x = swap_tx_cost_dollars
+    pl.plot(x, [100*u[0] for u in lvr_and_fees_03], label="Losses to LVR", marker="v")
+    pl.plot(x, [100*u[1] for u in lvr_and_fees_03], label="Gains from arb fees, 0.3% pool", marker="o", color="green")
+    pl.plot(x, [100*u[1] for u in lvr_and_fees_005], label="Gains from arb fees, 0.05% pool", marker="o", color="lightgreen")
 
     pl.xlabel("Swap tx cost, $")
     pl.ylabel("APR, %")
@@ -226,50 +235,51 @@ def plot_lvr_and_tx_cost():
 
 
 def plot_lvr_and_block_time():
-    tx_cost_bps = 0.01
-    swap_tx_cost = INITIAL_VALUE * tx_cost_bps / (100 * 100)
+    #tx_cost_bps = 0.01
+    #swap_tx_cost = INITIAL_VALUE * tx_cost_bps / (100 * 100)
     # multiply by 500 because the assumption is $1M liquidity instead of $2000 as in this model
-    swap_tx_cost *= 500
+    #swap_tx_cost *= 500
+
+    # assume not so cheap transactions
+    swap_tx_cost_dollars = 5
 
     fig, ax = pl.subplots()
     fig.set_size_inches((4, 3))
 
+    # reduce the number of simulations, since we iterate over each block
+    num_simulations = 10 # very small, but the sigma and mean are still quite accurate
 
-    # reduce the number of simulations, sicne we iterate over each block
-    num_simulations = 50
+    base_block_time_seconds = 1
+    blocks_per_day = 86400 // base_block_time_seconds
 
-    num_blocks = 86400 // 12
-
-    all_prices = get_price_path(SIGMA, blocks_per_day=num_blocks, M=num_simulations)
-    print(all_prices.shape)
+    all_prices = get_price_path(SIGMA, blocks_per_day=blocks_per_day, M=num_simulations)
     final_prices = all_prices[-1,:]
-    print(final_prices)
+
     returns = final_prices / INITIAL_PRICE
     year_sigma = SIGMA * sqrt(NUM_DAYS) # convert from daily to yearly volatility
     print(f"sigma={year_sigma:.2f} mean={np.mean(final_prices):.4f} std={np.std(np.log(returns)):.4f}")
 
-    block_div = [1, 3, 10, 30, 100]
+    block_time_dividers = [1, 2, 4, 8, 12]
     lvr_and_fees = []
-    for div in block_div:
-        if div > 1:
-            all_prices = all_prices.reshape((num_blocks * NUM_DAYS) // div, div, num_simulations)
+    for divider in block_time_dividers:
+        if divider > 1:
+            all_prices = all_prices.reshape((blocks_per_day * NUM_DAYS) // divider, divider, num_simulations)
 
             final_prices = all_prices[-1,:][-1,:]
             returns = final_prices / INITIAL_PRICE
             year_sigma = SIGMA * sqrt(NUM_DAYS) # convert from daily to yearly volatility
-            print(f"  div={div} sigma={year_sigma:.2f} mean={np.mean(final_prices):.4f} std={np.std(np.log(returns)):.4f}")
+            print(f"  div={divider} sigma={year_sigma:.2f} mean={np.mean(final_prices):.4f} std={np.std(np.log(returns)):.4f}")
 
-        lvr, fees1 = compute_lvr(all_prices, 0.0)
-        _, fees2   = compute_lvr(all_prices, swap_tx_cost)
+        lvr, fees1 = compute_lvr(all_prices, 0.0, SWAP_FEE_03)
+        _, fees2   = compute_lvr(all_prices, swap_tx_cost_dollars, SWAP_FEE_03)
         lvr_and_fees.append((lvr, fees1, fees2))
 
-    block_time_sec = [12 * d for d in block_div]
+    block_time_sec = [u * base_block_time_seconds for u in block_time_dividers]
     pl.plot(block_time_sec, [100*u[0] for u in lvr_and_fees], label="Losses to LVR", marker="v")
     pl.plot(block_time_sec, [100*u[1] for u in lvr_and_fees], label="Gains from arb fees, tx cost=$0", marker="o", color="green")
-    pl.plot(block_time_sec, [100*u[2] for u in lvr_and_fees], label="Gains from arb fees, tx cost=$0.1", marker="o", color="lightgreen")
+    pl.plot(block_time_sec, [100*u[2] for u in lvr_and_fees], label=f"Gains from arb fees, tx cost=${swap_tx_cost_dollars}", marker="o", color="lightgreen")
 
     pl.xlabel("Block time, seconds")
-    pl.xscale("log")
     pl.ylabel("APR, %")
     pl.legend()
     pl.ylim(ymin=0)
