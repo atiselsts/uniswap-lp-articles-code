@@ -147,7 +147,7 @@ def estimate_lvr(prices, swap_tx_cost, fee_tier):
     num_tx = 0
 
     for cex_price in prices:
-        pool_price = reserve_y / reserve_y
+        pool_price = reserve_y / reserve_x
         if cex_price > pool_price:
             to_price = cex_price * fee_factor_down
             if to_price < pool_price:
@@ -194,21 +194,12 @@ def compute_lvr(all_prices, swap_tx_cost, fee_tier):
     all_fees = []
     all_tx_per_block = []
 
-    # assume $1 million of liquidity in the pool (the larger, the better for all parties)
-#    pool_x0 = 500
-#    pool_y0 = 500_000
-#    pool_value0 = pool_x0 * INITIAL_PRICE + pool_y0
-
-#    L = v2_math.get_liquidity(pool_x0, pool_y0)
-
     if len(all_prices.shape) > 2:
         # take the first elements from the second dimension
         all_prices = all_prices[:,0,:]
 
-
     for sim in range(all_prices.shape[1]):
         prices = all_prices[:,sim]
-
         lvr, collected_fees, num_tx = estimate_lvr(prices, swap_tx_cost, fee_tier)
         all_lvr.append(lvr)
         all_fees.append(collected_fees)
@@ -216,6 +207,7 @@ def compute_lvr(all_prices, swap_tx_cost, fee_tier):
 
     return np.mean(all_lvr), np.mean(all_fees), np.mean(all_tx_per_block)
 
+############################################################
 
 def plot_lvr_and_tx_cost():
     # assume pool with $1 million liquidity
@@ -260,7 +252,7 @@ def plot_lvr_and_tx_cost():
     pl.savefig("article_3_lvr_and_tx_cost.png", bbox_inches='tight')
     pl.close()
 
-
+############################################################
 
 def plot_lvr_and_block_time():
     #tx_cost_bps = 0.01
@@ -349,6 +341,7 @@ def compute_expected_divloss(sigma):
 
     return np.mean(all_divloss)
 
+############################################################
 
 def plot_divloss_from_sigma():
     fig, ax = pl.subplots()
@@ -378,6 +371,7 @@ def plot_divloss_from_sigma():
 #
 # This aims to replicate Table 1 from the paper "LVR-with-fees", i.e.
 # "Automated Market Making and Arbitrage Profits in the Presence of Fees".
+# The difference is they're using Poisson distribution, while here it is the random distr.
 #
 def simulate_prob_trade_per_block():
     # don't simulate the 50 msec case, it requires too much blocks & not practical
@@ -394,7 +388,7 @@ def simulate_prob_trade_per_block():
     blocks_per_day = 86400 // base_blocktime_sec
 
     num_days = 10
-    num_simulations = 100
+    num_simulations = 50
     all_prices = get_price_path(SIGMA, blocks_per_day=blocks_per_day, M=num_simulations, num_days=num_days)
     final_prices = all_prices[-1,:]
 
@@ -423,68 +417,6 @@ def simulate_prob_trade_per_block():
         print("")
 
 ############################################################
-
-def simulate_poisson_block_times():
-    base_blocktime_sec = 2
-    block_time_multipliers = [1, 6, 60, 300]
-
-#    lam = block_time_multipliers[0]
-
-    num_days = 2
-
-    num_simulations = 100
-
-    blocks_per_day = 86400 // base_blocktime_sec
-    blocks_per_day //= block_time_multipliers[1] # XXX
-    block_time_distr = np.random.exponential(scale=1.0, size=num_days * blocks_per_day)
-
-    #count, bins, ignored = pl.hist(distr, 100, density=True)
-    #pl.show()
-
-    sigma = SIGMA * sqrt(num_days) # convert from daily to period volatility
-    all_prices = get_price_path(sigma, blocks_per_day=blocks_per_day, M=num_simulations, num_days=num_days)
-
-    all_lvr = []
-    all_fees = []
-    all_tx_per_block = []
-
-    swap_tx_cost = 0.0
-
-    # as in the paper
-    swap_fee_bps = [1, 5, 10, 30, 100]
-
-    for bps in swap_fee_bps:
-        for sim in range(all_prices.shape[1]):
-            prices = all_prices[:,sim]
-#            print(prices)
-
-            adj_prices = [prices[0]]
-            price = prices[0]
-            t = 0
-            for i in range(1, len(prices)):
-                f = prices[i] / prices[i-1]
-                t += block_time_distr[i]
-                # correct the factor in terms of the time passed between the blocks
-                s_factor = sqrt(block_time_distr[i])
-                new_f = 1.0 + s_factor * (f - 1)
-#                if s_factor < 0.5 or s_factor > 2:
-#                    print(f, new_f, s_factor)
-                price *= new_f
-                adj_prices.append(price)
-#            print("total t=", t, "num blocks=", len(prices))
-
-            fee_tier = bps / 10_000
-#            print(adj_prices[:5], adj_prices[-5:])
-            lvr, collected_fees, num_tx = estimate_lvr(adj_prices, swap_tx_cost, fee_tier)
-            all_lvr.append(lvr)
-            all_fees.append(collected_fees)
-            all_tx_per_block.append(num_tx / len(adj_prices))
-
-        tx_per_block = np.mean(all_tx_per_block)
-        print(f"block_time={86400 // blocks_per_day} bps={bps} tx_per_block={100*tx_per_block:.2f}%")
-
-
-############################################################
     
 def main():
     mpl_style(True)
@@ -493,18 +425,16 @@ def main():
     test_amounts()
 
     # try to match LVR paper results
-#    simulate_prob_trade_per_block()
-
-    simulate_poisson_block_times()
+    simulate_prob_trade_per_block()
 
     # check what % of LVR goes to the LP as fees, as a function of Tx cost
-#    plot_lvr_and_tx_cost()
+    plot_lvr_and_tx_cost()
 
     # check what % of LVR goes to the LP as fees, as a function of block time
-#    plot_lvr_and_block_time()
+    plot_lvr_and_block_time()
 
     # plot the expectd DL == LVR depending on volatility
-#    plot_divloss_from_sigma()
+    plot_divloss_from_sigma()
 
 
 if __name__ == '__main__':
